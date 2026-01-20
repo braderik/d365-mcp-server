@@ -79,5 +79,5 @@ def list_d365_topics() -> str:
     return "**Available D365 Documentation Topics:**\n\n" + "\n".join(f"- {t}" for t in topics)
 
 if __name__ == "__main__":
-    # Run with HTTP transport for ChatGPT compatibility
-    mcp.run(transport="http", host="0.0.0.0", port=8000, path="/mcp")
+    # Run with SSE transport for ChatGPT compatibility
+    mcp.run(transport="sse", host="0.0.0.0", port=8000)
