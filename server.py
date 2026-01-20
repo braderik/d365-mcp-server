@@ -1,70 +1,63 @@
 from fastmcp import FastMCP
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
 from openai import OpenAI
 import os
-import json
 
 # Initialize FastMCP server
 mcp = FastMCP("D365 Documentation")
 
-# Configuration
-QDRANT_PATH = os.environ.get("QDRANT_PATH", "./qdrant_storage")
-COLLECTION_NAME = "d365_docs"
-EMBEDDING_MODEL = "text-embedding-3-small"
-EMBEDDING_DIM = 1536
+# OpenAI Vector Store ID (pre-indexed D365 docs)
+VECTOR_STORE_ID = "vs_68f7bebdff78819195d043f09a740930"
 
-def get_qdrant_client():
-    """Get Qdrant client."""
-    return QdrantClient(path=QDRANT_PATH)
-
-def get_embedding(text: str) -> list:
-    """Generate embedding using OpenAI."""
-    client = OpenAI()
-    response = client.embeddings.create(
-        input=text,
-        model=EMBEDDING_MODEL
-    )
-    return response.data[0].embedding
+def get_openai_client():
+    return OpenAI()
 
 @mcp.tool()
-def query_d365_docs(query: str, limit: int = 5) -> str:
+def query_d365_docs(query: str) -> str:
     """
     Search Microsoft Dynamics 365 documentation for relevant information.
     
     Args:
         query: Your question or topic to search for in D365 docs.
-        limit: Maximum number of results to return (default: 5).
     
     Returns:
         Relevant excerpts from D365 documentation.
     """
     try:
-        # Generate embedding for query
-        query_vector = get_embedding(query)
+        client = get_openai_client()
         
-        # Search Qdrant
-        client = get_qdrant_client()
-        results = client.search(
-            collection_name=COLLECTION_NAME,
-            query_vector=query_vector,
-            limit=limit
+        # Create a thread with file search
+        thread = client.beta.threads.create(
+            messages=[{"role": "user", "content": query}],
+            tool_resources={"file_search": {"vector_store_ids": [VECTOR_STORE_ID]}}
         )
         
-        if not results:
-            return "No relevant D365 documentation found for your query."
+        # Create assistant for search
+        assistant = client.beta.assistants.create(
+            name="D365 Documentation Search",
+            instructions="Search the attached D365 documentation files and provide relevant information. Always cite the source file.",
+            model="gpt-4o",
+            tools=[{"type": "file_search"}]
+        )
         
-        # Format results
-        formatted = []
-        for i, point in enumerate(results, 1):
-            payload = point.payload or {}
-            source = payload.get("source", "Unknown")
-            content = payload.get("content", "")[:500]
-            score = point.score
-            formatted.append(f"**[{i}] {source}** (relevance: {score:.2f})\n{content}...")
-        
-        return "\n\n---\n\n".join(formatted)
-    
+        try:
+            # Run the assistant
+            run = client.beta.threads.runs.create_and_poll(
+                thread_id=thread.id,
+                assistant_id=assistant.id
+            )
+            
+            if run.status == 'completed':
+                messages = client.beta.threads.messages.list(thread_id=thread.id)
+                for msg in messages.data:
+                    if msg.role == "assistant":
+                        return msg.content[0].text.value
+                return "No relevant D365 documentation found."
+            else:
+                return f"Search failed: {run.status}"
+        finally:
+            # Clean up assistant
+            client.beta.assistants.delete(assistant.id)
+            
     except Exception as e:
         return f"Error searching D365 documentation: {str(e)}"
 
